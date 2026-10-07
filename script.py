@@ -213,7 +213,7 @@ def scanner_candidatures(service):
                         id=message_id,
                         format='full'
                     ).execute(num_retries=5)
-                    afficher_reponse(message, sorted(raisons))
+                    
             else:
                 print("[RÉSULTAT] Aucune réponse ou aucun mail correspondant trouvé.\n")
         else:
