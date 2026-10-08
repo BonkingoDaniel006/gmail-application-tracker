@@ -1,92 +1,64 @@
-import base64
+import json
 from datetime import datetime
+from email.message import EmailMessage
 from email.utils import getaddresses
-import os.path
-import sys
+from pathlib import Path
 import time
+import base64
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-# Scope nécessaire : lecture seule des mails
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+# La lecture sert au scan ; l'envoi est nécessaire pour les relances.
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.send',
+]
+BASE_DIR = Path(__file__).resolve().parent
 
 
 def get_gmail_service():
     """Gère l'authentification OAuth2 et retourne le service Gmail."""
     creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    token_path = BASE_DIR / 'token.json'
+    credentials_path = BASE_DIR / 'credentials.json'
+    if token_path.exists():
+        creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
     
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+    missing_scopes = creds is not None and not creds.has_scopes(SCOPES)
+    if not creds or not creds.valid or missing_scopes:
+        if creds and creds.expired and creds.refresh_token and not missing_scopes:
             creds.refresh(Request())
         else:
-            if not os.path.exists('credentials.json'):
+            if not credentials_path.exists():
                 print("\n[ERREUR] Le fichier 'credentials.json' est introuvable.")
                 print("Veuillez télécharger vos identifiants Google Cloud Console et les placer dans le même dossier.\n")
-                sys.exit(1)
-            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+                raise FileNotFoundError(credentials_path)
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(credentials_path), SCOPES
+            )
             creds = flow.run_local_server(port=0)
         
-        with open('token.json', 'w') as token:
+        with token_path.open('w', encoding='utf-8') as token:
             token.write(creds.to_json())
 
     return build('gmail', 'v1', credentials=creds)
 
 
-def extraire_corps(payload):
-    """Retourne le texte du corps, en privilégiant le texte brut au HTML."""
-    textes = []
-    html = []
-
-    def parcourir(partie):
-        en_tetes = partie.get('headers', [])
-        disposition = next(
-            (
-                header.get('value', '').lower()
-                for header in en_tetes
-                if header.get('name', '').lower() == 'content-disposition'
-            ),
-            ''
-        )
-        if partie.get('filename') or disposition.startswith('attachment'):
-            return
-
-        donnees = partie.get('body', {}).get('data')
-        type_mime = partie.get('mimeType', '')
-        if donnees and type_mime in ('text/plain', 'text/html'):
-            contenu = base64.urlsafe_b64decode(donnees + '=' * (-len(donnees) % 4))
-            texte = contenu.decode('utf-8', errors='replace')
-            (textes if type_mime == 'text/plain' else html).append(texte)
-
-        for sous_partie in partie.get('parts', []):
-            parcourir(sous_partie)
-
-    parcourir(payload)
-    return '\n'.join(textes) if textes else '\n'.join(html)
-
-
-def afficher_reponse(message, raisons):
-    """Affiche le contenu d'un message reçu correspondant à une candidature."""
-    payload = message.get('payload', {})
-    en_tetes = {
+def entetes_message(message):
+    """Retourne les en-têtes du message indexés sans tenir compte de la casse."""
+    return {
         header.get('name', '').lower(): header.get('value', '')
-        for header in payload.get('headers', [])
+        for header in message.get('payload', {}).get('headers', [])
     }
-    date_gmail = datetime.fromtimestamp(int(message['internalDate']) / 1000)
-    date_gmail = date_gmail.astimezone().strftime('%d/%m/%Y %H:%M:%S %Z')
-    corps = extraire_corps(payload)
 
-    print(f"\nDe       : {en_tetes.get('from', '(expéditeur non disponible)')}")
-    print(f"Objet    : {en_tetes.get('subject', '(sans objet)')}")
-    print(f"Date     : {date_gmail}")
-    print(f"Détection: {', '.join(raisons)}")
-    print("-" * 50)
-    print(corps or "(aucun corps textuel disponible)")
-    print("=" * 50)
+
+def date_message(message):
+    """Formate l'horodatage Gmail pour l'affichage et le modèle de relance."""
+    date = datetime.fromtimestamp(int(message['internalDate']) / 1000)
+    return date.astimezone().strftime('%d/%m/%Y')
 
 
 def lister_messages(service, query):
@@ -108,12 +80,12 @@ def lister_messages(service, query):
 
 
 def extraire_destinataires(message):
-    """Extrait les adresses To/Cc/Bcc d'un message Gmail."""
+    """Extrait les adresses du champ To d'une candidature envoyée."""
     en_tetes = message.get('payload', {}).get('headers', [])
     valeurs = [
         header.get('value', '')
         for header in en_tetes
-        if header.get('name', '').lower() in ('to', 'cc', 'bcc')
+        if header.get('name', '').lower() == 'to'
     ]
     return {
         adresse.lower()
@@ -122,105 +94,234 @@ def extraire_destinataires(message):
     }
 
 
-def rechercher_reponses(service, candidatures):
-    """Trouve les mails reçus des destinataires ou dans les fils de candidature."""
-    destinataires = set()
-    fils_candidatures = set()
+def lister_adresses_entete(message, nom_entete):
+    """Extrait les adresses d'un en-tête comme To ou From."""
+    valeurs = [
+        header.get('value', '')
+        for header in message.get('payload', {}).get('headers', [])
+        if header.get('name', '').lower() == nom_entete.lower()
+    ]
+    return {
+        adresse.lower()
+        for _, adresse in getaddresses(valeurs)
+        if adresse and '@' in adresse
+    }
 
-    for index, candidature in enumerate(candidatures, start=1):
-        if candidature.get('threadId'):
-            fils_candidatures.add(candidature['threadId'])
-        print(
-            f"\r[PROGRESSION] Lecture des destinataires "
-            f"{index}/{len(candidatures)}...",
-            end='',
-            flush=True
-        )
-        message = service.users().messages().get(
+
+def lire_metadonnees(service, message_id, cache):
+    """Lit et met en cache les métadonnées nécessaires d'un message."""
+    if message_id not in cache:
+        cache[message_id] = service.users().messages().get(
             userId='me',
-            id=candidature['id'],
+            id=message_id,
             format='metadata',
-            metadataHeaders=['To', 'Cc', 'Bcc']
+            metadataHeaders=['To', 'From', 'Subject']
         ).execute(num_retries=5)
-        destinataires.update(extraire_destinataires(message))
         time.sleep(1)
+    return cache[message_id]
+
+
+def rechercher_reponses(service, candidatures, cache):
+    """Associe chaque réponse à son expéditeur et construit le dictionnaire de relance."""
+    destinataires = {}
+    adresses_personnelles = set()
+    messages_par_id = {}
+
+    for candidature in candidatures:
+        metadata = lire_metadonnees(service, candidature['id'], cache)
+        messages_par_id[candidature['id']] = metadata
+        date_envoi = int(metadata['internalDate'])
+        adresses_personnelles.update(lister_adresses_entete(metadata, 'From'))
+
+        for adresse in extraire_destinataires(metadata):
+            destinataire = destinataires.setdefault(
+                adresse,
+                {'premier_envoi': date_envoi, 'dernier_envoi': date_envoi,
+                 'derniere_candidature': metadata}
+            )
+            destinataire['premier_envoi'] = min(
+                destinataire['premier_envoi'], date_envoi
+            )
+            if date_envoi >= destinataire['dernier_envoi']:
+                destinataire['dernier_envoi'] = date_envoi
+                destinataire['derniere_candidature'] = metadata
+
+    reponses = {}
+    adresses_candidats = sorted(set(destinataires) - adresses_personnelles)
+    for debut in range(0, len(adresses_candidats), 20):
+        groupe = adresses_candidats[debut:debut + 20]
+        filtres = ' '.join(f'from:{adresse}' for adresse in groupe)
+        query = (
+            f'in:inbox from:{groupe[0]}'
+            if len(groupe) == 1
+            else f'in:inbox {{{filtres}}}'
+        )
+
+        for message in lister_messages(service, query):
+            metadata = lire_metadonnees(service, message['id'], cache)
+            date_reception = int(metadata['internalDate'])
+            for adresse in lister_adresses_entete(metadata, 'From'):
+                destinataire = destinataires.get(adresse)
+                if (
+                    destinataire
+                    and adresse not in adresses_personnelles
+                    and date_reception > destinataire['premier_envoi']
+                ):
+                    reponses[message['id']] = metadata
+                    break
+
+    adresses_avec_reponse = {
+        adresse
+        for message in reponses.values()
+        for adresse in lister_adresses_entete(message, 'From')
+    }
+    relances = {
+        adresse: date_message(info['derniere_candidature'])
+        for adresse, info in destinataires.items()
+        if adresse not in adresses_personnelles
+        and adresse not in adresses_avec_reponse
+    }
+
+    return reponses, relances, messages_par_id
+
+
+def afficher_resultats(candidatures, reponses, messages_par_id):
+    """Affiche uniquement les quatre statistiques et les deux mails les plus anciens."""
+    print(f"Candidatures envoyées : {len(candidatures)}")
 
     if candidatures:
-        print()
+        plus_ancienne = min(
+            (messages_par_id[item['id']] for item in candidatures),
+            key=lambda message: int(message['internalDate'])
+        )
+        headers = entetes_message(plus_ancienne)
+        print(
+            "Plus vieille candidature : "
+            f"{date_message(plus_ancienne)} — "
+            f"{headers.get('to', '(destinataire inconnu)')} — "
+            f"{headers.get('subject', '(sans objet)')}"
+        )
+    else:
+        print("Plus vieille candidature : aucune")
 
-    correspondances = {}
-
-    # Un message reçu dans le même fil Gmail est une réponse, même si l'expéditeur
-    # utilise une adresse différente de celle destinataire de la candidature.
-    messages_recus = lister_messages(service, 'in:inbox')
-    for message in messages_recus:
-        if message.get('threadId') in fils_candidatures:
-            correspondances.setdefault(message['id'], set()).add(
-                'même fil que la candidature'
-            )
-
-    # Recherche aussi les nouveaux fils démarrés par une adresse déjà contactée.
-    adresses = sorted(destinataires)
-    taille_groupe = 20
-    for debut in range(0, len(adresses), taille_groupe):
-        groupe = adresses[debut:debut + taille_groupe]
-        filtres_expediteur = ' '.join(f'from:{adresse}' for adresse in groupe)
-        if len(groupe) == 1:
-            query = f'in:inbox {filtres_expediteur}'
-        else:
-            query = f'in:inbox {{{filtres_expediteur}}}'
-        for message in lister_messages(service, query):
-            correspondances.setdefault(message['id'], set()).add(
-                'expéditeur déjà contacté'
-            )
-
-    return correspondances
+    print(f"Réponses reçues : {len(reponses)}")
+    if reponses:
+        plus_ancienne_reponse = min(
+            reponses.values(),
+            key=lambda message: int(message['internalDate'])
+        )
+        headers = entetes_message(plus_ancienne_reponse)
+        print(
+            "Plus vieille réponse : "
+            f"{date_message(plus_ancienne_reponse)} — "
+            f"{headers.get('from', '(expéditeur inconnu)')} — "
+            f"{headers.get('subject', '(sans objet)')}"
+        )
+    else:
+        print("Plus vieille réponse : aucune")
 
 
 def scanner_candidatures(service):
-    """Compte les candidatures et recherche les réponses dans la boîte de réception."""
-    print("\n" + "="*50)
-    print(" [SCAN] Initialisation du scan des candidatures...")
-    print("="*50)
-    time.sleep(1)
-
-    # Requête de recherche Gmail : envoyés + objet contenant "candidature" ET "Full-stack"
+    """Compte les candidatures/réponses et renvoie les adresses à relancer."""
     query = 'in:sent subject:"candidature" subject:"Full-stack"'
-    print(f"[INFO] Filtre appliqué : {query}")
-    print("[INFO] Connexion aux serveurs Gmail...")
-    time.sleep(1)
 
     try:
         candidatures = lister_messages(service, query)
-
-        print("\n" + "-"*50)
-        print(
-            "[RÉSULTAT FINAL] Total d'e-mails envoyés correspondant au filtre : "
-            f"{len(candidatures)}"
+        cache = {}
+        reponses, relances, messages_par_id = rechercher_reponses(
+            service, candidatures, cache
         )
-        print("-"*50 + "\n")
-
-        if candidatures:
-            correspondances = rechercher_reponses(service, candidatures)
-            if correspondances:
-                print(
-                    f"[RÉPONSES] {len(correspondances)} mail(s) reçu(s) "
-                    "correspondent à une candidature :\n"
-                )
-                for message_id, raisons in correspondances.items():
-                    message = service.users().messages().get(
-                        userId='me',
-                        id=message_id,
-                        format='full'
-                    ).execute(num_retries=5)
-                    
-            else:
-                print("[RÉSULTAT] Aucune réponse ou aucun mail correspondant trouvé.\n")
-        else:
-            print("[INFO] Aucune candidature ne correspond au filtre.\n")
-
+        afficher_resultats(candidatures, reponses, messages_par_id)
+        return relances
     except HttpError as error:
-        print(f"\n[ERREUR API] Une erreur s'est produite lors du scan : {error}\n")
+        print(f"\n[ERREUR API] Le scan a échoué : {error}\n")
+        return None
+
+
+def charger_configuration_mail():
+    """Charge et valide le modèle de relance et les coordonnées dans mail.json."""
+    config_path = BASE_DIR / 'mail.json'
+    with config_path.open(encoding='utf-8') as fichier:
+        configuration = json.load(fichier)
+
+    champs_requis = ('subject', 'body', 'prenom', 'nom', 'telephone', 'lien',
+                     'attachment')
+    if any(
+        not isinstance(configuration.get(champ), str)
+        or not configuration[champ].strip()
+        for champ in champs_requis
+    ):
+        raise ValueError(
+            "mail.json doit contenir subject, body, prenom, nom, telephone, "
+            "lien et attachment ; les coordonnées ne doivent pas être vides."
+        )
+
+    chemin_piece_jointe = BASE_DIR / configuration['attachment']
+    if not chemin_piece_jointe.is_file():
+        raise FileNotFoundError(
+            f"Pièce jointe introuvable : {chemin_piece_jointe}"
+        )
+
+    return configuration, chemin_piece_jointe
+
+
+def envoyer_relances(service, relances, configuration, chemin_piece_jointe):
+    """Envoie une seule relance par adresse sans réponse."""
+    envoyes = 0
+    subject = configuration['subject']
+
+    for adresse, date_candidature in relances.items():
+        requete_precedent = (
+            f'in:sent to:{adresse} subject:"{subject}"'
+        )
+        if lister_messages(service, requete_precedent):
+            print(f"Relance déjà envoyée à {adresse}, ignorée.")
+            continue
+
+        message = EmailMessage()
+        message['To'] = adresse
+        message['Subject'] = subject
+        try:
+            message.set_content(configuration['body'].format(
+                date_candidature=date_candidature,
+                prenom=configuration['prenom'],
+                nom=configuration['nom'],
+                telephone=configuration['telephone'],
+                lien=configuration['lien'],
+                portfolio=configuration['portfolio'],
+            ))
+        except KeyError as error:
+            raise ValueError(
+                f"Champ de modèle inconnu dans mail.json : {error}"
+            ) from error
+
+        message.add_attachment(
+            chemin_piece_jointe.read_bytes(),
+            maintype='application',
+            subtype='pdf',
+            filename=chemin_piece_jointe.name
+        )
+        raw_message = base64.urlsafe_b64encode(
+            message.as_bytes()
+        ).decode('ascii').rstrip('=')
+
+        try:
+            service.users().messages().send(
+                userId='me',
+                body={'raw': raw_message}
+            ).execute(num_retries=5)
+            envoyes += 1
+            print(f"Relance envoyée à {adresse}.")
+            time.sleep(1)
+        except HttpError as error:
+            print(
+                f"\n[ERREUR API] Envoi interrompu pour {adresse} : {error}. "
+                f"{envoyes} relance(s) envoyée(s) avant l'erreur.\n"
+            )
+            return envoyes
+
+    print(f"\nRelances envoyées : {envoyes}")
+    return envoyes
 
 def menu():
     """Affiche le menu interactif de l'application."""
@@ -242,10 +343,47 @@ def main():
             if not service:
                 print("\n[INFO] Vérification de l'authentification Google...")
                 service = get_gmail_service()
-            scanner_candidatures(service)
+            relances = scanner_candidatures(service)
+            if relances is None:
+                continue
+
+            while True:
+                print("\n1. Relancer les destinataires qui n'ont jamais répondu")
+                print("2. Retourner au menu principal")
+                choix_scan = input("Votre choix (1 ou 2) : ").strip()
+
+                if choix_scan == '2':
+                    break
+                if choix_scan != '1':
+                    print("[ATTENTION] Choix invalide. Veuillez saisir 1 ou 2.")
+                    continue
+                if not relances:
+                    print("Aucun destinataire sans réponse à relancer.")
+                    break
+
+                try:
+                    configuration, piece_jointe = charger_configuration_mail()
+                except (OSError, ValueError) as error:
+                    print(f"[ERREUR] Configuration de relance invalide : {error}")
+                    break
+
+                print(
+                    f"{len(relances)} destinataire(s) n'ont jamais répondu. "
+                    "Chaque adresse recevra une seule relance avec Daniel.pdf."
+                )
+                confirmation = input(
+                    "Pour confirmer l'envoi, tapez ENVOYER "
+                    "(ou toute autre touche pour annuler) : "
+                ).strip()
+                if confirmation != 'ENVOYER':
+                    print("Envoi annulé.")
+                    break
+
+                envoyer_relances(service, relances, configuration, piece_jointe)
+                break
         elif choix == '2':
             print("\n[FERMETURE] Arrêt du programme. Bon courage pour tes recherches d'alternance !")
-            sys.exit(0)
+            return
         else:
             print("\n[ATTENTION] Choix invalide. Veuillez saisir 1 ou 2.")
 

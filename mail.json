@@ -1,0 +1,10 @@
+{
+  "subject": "Relance concernant ma candidature spontanée",
+  "body": "Bonjour Madame, Monsieur,\n\nJe me permets de revenir vers vous concernant ma candidature spontanée transmise le {date_candidature} pour un poste au sein de votre entreprise.\n\nToujours très intéressé(e) par vos activités et convaincu(e) que mes compétences et mon parcours pourraient apporter une vraie valeur ajoutée à vos équipes, je souhaite réitérer mon enthousiasme à l'idée de rejoindre votre entreprise.\n\nJe reste à votre entière disposition pour échanger davantage. Seriez-vous disponible dans les prochains jours pour un court entretien, en présentiel ou en visioconférence, afin d'évoquer d'éventuelles opportunités de collaboration ?\n\nJe vous remercie par avance pour le temps accordé à ma démarche et vous souhaite une excellente journée.\n\nBien cordialement,\n\n{prenom} {nom}\n{telephone}\n{lien}\n{portfolio}",
+  "prenom": "Daniel",
+  "nom": "BOKINGO",
+  "telephone": "07 59 45 18 64",
+  "lien": "https://www.linkedin.com/in/daniel-bokingo/",
+  "portfolio": "https://danielbokingoportfolio.onrender.com/",
+  "attachment": "Daniel.pdf"
+}
