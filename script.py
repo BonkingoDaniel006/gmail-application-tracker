@@ -5,9 +5,11 @@ from email.utils import getaddresses
 from pathlib import Path
 import time
 import base64
+import httplib2
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -25,17 +27,20 @@ def get_gmail_service():
     token_path = BASE_DIR / 'token.json'
     credentials_path = BASE_DIR / 'credentials.json'
     if token_path.exists():
+        print("[AUTH] Chargement du token OAuth...", flush=True)
         creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
     
     missing_scopes = creds is not None and not creds.has_scopes(SCOPES)
     if not creds or not creds.valid or missing_scopes:
         if creds and creds.expired and creds.refresh_token and not missing_scopes:
-            creds.refresh(Request())
+            print("[AUTH] Renouvellement du token OAuth...", flush=True)
+            creds.refresh(Request(timeout=30))
         else:
             if not credentials_path.exists():
                 print("\n[ERREUR] Le fichier 'credentials.json' est introuvable.")
                 print("Veuillez télécharger vos identifiants Google Cloud Console et les placer dans le même dossier.\n")
                 raise FileNotFoundError(credentials_path)
+            print("[AUTH] Ouverture de l'autorisation Google...", flush=True)
             flow = InstalledAppFlow.from_client_secrets_file(
                 str(credentials_path), SCOPES
             )
@@ -44,7 +49,16 @@ def get_gmail_service():
         with token_path.open('w', encoding='utf-8') as token:
             token.write(creds.to_json())
 
-    return build('gmail', 'v1', credentials=creds)
+    print("[AUTH] Initialisation du client Gmail (délai maximal : 30 s)...", flush=True)
+    http = AuthorizedHttp(creds, http=httplib2.Http(timeout=30))
+    service = build(
+        'gmail',
+        'v1',
+        http=http,
+        cache_discovery=False
+    )
+    print("[AUTH] Client Gmail prêt.", flush=True)
+    return service
 
 
 def entetes_message(message):
@@ -127,7 +141,13 @@ def rechercher_reponses(service, candidatures, cache):
     adresses_personnelles = set()
     messages_par_id = {}
 
-    for candidature in candidatures:
+    for index, candidature in enumerate(candidatures, start=1):
+        print(
+            f"\r[SCAN] Lecture des candidatures : "
+            f"{index}/{len(candidatures)}",
+            end='',
+            flush=True
+        )
         metadata = lire_metadonnees(service, candidature['id'], cache)
         messages_par_id[candidature['id']] = metadata
         date_envoi = int(metadata['internalDate'])
@@ -146,8 +166,16 @@ def rechercher_reponses(service, candidatures, cache):
                 destinataire['dernier_envoi'] = date_envoi
                 destinataire['derniere_candidature'] = metadata
 
+    if candidatures:
+        print()
+
     reponses = {}
     adresses_candidats = sorted(set(destinataires) - adresses_personnelles)
+    print(
+        f"[SCAN] Recherche des réponses pour "
+        f"{len(adresses_candidats)} adresse(s)...",
+        flush=True
+    )
     for debut in range(0, len(adresses_candidats), 20):
         groupe = adresses_candidats[debut:debut + 20]
         filtres = ' '.join(f'from:{adresse}' for adresse in groupe)
@@ -169,6 +197,7 @@ def rechercher_reponses(service, candidatures, cache):
                 ):
                     reponses[message['id']] = metadata
                     break
+    print(f"[SCAN] {len(reponses)} réponse(s) correspondante(s) trouvée(s).")
 
     adresses_avec_reponse = {
         adresse
@@ -226,7 +255,9 @@ def scanner_candidatures(service):
     query = 'in:sent subject:"candidature" subject:"Full-stack"'
 
     try:
+        print("[SCAN] Recherche des candidatures envoyées dans Gmail...", flush=True)
         candidatures = lister_messages(service, query)
+        print(f"[SCAN] {len(candidatures)} candidature(s) trouvée(s).", flush=True)
         cache = {}
         reponses, relances, messages_par_id = rechercher_reponses(
             service, candidatures, cache
