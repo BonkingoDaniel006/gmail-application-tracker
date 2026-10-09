@@ -122,6 +122,4 @@ confirmer tout envoi.
 
 `credentials.json` contient les identifiants OAuth de l'application et
 `token.json` contient les jetons d'accès au compte. Ne publie ni ne partage ces
-fichiers. Ils sont exclus du dépôt par `.gitignore`. Le fichier `mail.json`
-contient également des coordonnées personnelles : garde-le privé si tu publies
-le projet.
+fichiers. Ils sont exclus du dépôt par `.gitignore`.
