@@ -118,8 +118,3 @@ les appels API.
 Vérifie les destinataires, le contenu de `mail.json` et la pièce jointe avant de
 confirmer tout envoi.
 
-## Fichiers locaux et confidentialité
-
-`credentials.json` contient les identifiants OAuth de l'application et
-`token.json` contient les jetons d'accès au compte. Ne publie ni ne partage ces
-fichiers. Ils sont exclus du dépôt par `.gitignore`.
