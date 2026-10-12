@@ -34,7 +34,7 @@ def get_gmail_service():
     if not creds or not creds.valid or missing_scopes:
         if creds and creds.expired and creds.refresh_token and not missing_scopes:
             print("[AUTH] Renouvellement du token OAuth...", flush=True)
-            creds.refresh(Request(timeout=30))
+            creds.refresh(Request())
         else:
             if not credentials_path.exists():
                 print("\n[ERREUR] Le fichier 'credentials.json' est introuvable.")

@@ -1,0 +1,11 @@
+{
+  "subject": "Candidature - Développeur Full-Stack",
+  "body": "Bonjour,\n\nPassionné par le développement de solutions robustes, je souhaite rejoindre votre équipe technique sur un poste de Développeur Full-Stack.\n\nJ'apprécie les environnements structurés (revues de code, bonnes pratiques, collaboration) et je m'attache à livrer un code propre et maintenable. Vous trouverez mon parcours détaillé dans le CV et le portfolio ci-joints.\n\nJe serais ravi d'échanger avec vous lors d'un entretien téléphonique cette semaine, selon vos disponibilités.\n\nCordialement,\n\n{prenom} {nom}\n{titre}\n{telephone}\n{lien}\nLien vers mon portfolio : {portfolio}",
+  "prenom": "Daniel",
+  "nom": "Bokingo",
+  "titre": "Développeur Full-Stack",
+  "telephone": "07 59 45 18 64",
+  "lien": "https://www.linkedin.com/in/daniel-bokingo/",
+  "portfolio": "https://danielbokingoportfolio.onrender.com/",
+  "attachment": "Daniel.pdf"
+}

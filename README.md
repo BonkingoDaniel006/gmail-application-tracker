@@ -118,3 +118,21 @@ les appels API.
 Vérifie les destinataires, le contenu de `mail.json` et la pièce jointe avant de
 confirmer tout envoi.
 
+## Envoyer une candidature aux contacts RH
+
+Le script `envoie.py` envoie le message défini dans `spontané.json` aux adresses
+de la colonne **CONTACT RH** de `contacts.csv`, avec le PDF `Daniel.pdf` en
+pièce jointe. Il ignore entièrement la colonne des tuteurs, déduplique les
+adresses RH et envoie un message individuel à chaque adresse. Le modèle utilise
+une formule d'appel neutre (« Bonjour, »), sans civilité dépendant du genre.
+
+Après avoir vérifié la liste des adresses affichée, saisis exactement
+`ENVOYER` pour confirmer. Toute autre réponse annule l'envoi.
+
+```bash
+python envoie.py
+```
+
+Le script réutilise l'authentification Gmail et les identifiants OAuth décrits
+plus haut. `contacts.csv`, `spontané.json` et `Daniel.pdf` doivent se trouver à
+la racine du projet.
